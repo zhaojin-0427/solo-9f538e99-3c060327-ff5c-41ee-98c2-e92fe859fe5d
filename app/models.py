@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 class ErrorBody(BaseModel):
     error: dict
+    details: dict = Field(default_factory=dict)
 
 
 class ConceptRef(BaseModel):
@@ -114,3 +115,45 @@ class ReportList(BaseModel):
     instance_id: str
     current: Optional[ReportOut] = None
     history: list[ReportOut]
+
+
+class SensitiveConcept(BaseModel):
+    concept: str = Field(..., description="敏感科目 QName，例如 acct:Inventory")
+    min_width: float = Field(..., gt=0,
+                             description="该科目可推断区间的最小允许宽度（正数）")
+
+
+class ExportRequest(BaseModel):
+    report_id: str = Field(..., description="当前可行的报告 ID")
+    expected_instance_revision: int = Field(..., ge=1)
+    expected_package_revision: int = Field(..., ge=1)
+    retained_concepts: list[str] = Field(
+        ..., min_length=1, description="公开（保留）科目 QNames"
+    )
+    sensitive_concepts: list[SensitiveConcept] = Field(
+        ..., min_length=1, description="敏感科目及各自最小允许推断宽度"
+    )
+
+
+class RangeOut(BaseModel):
+    """Achieved inference width for one sensitive concept; never its location."""
+    width: Optional[float]
+    min_width: float
+    unbounded: bool
+    satisfied: bool
+
+
+class ExportOut(BaseModel):
+    export_id: str
+    report_id: str
+    instance_id: str
+    package_id: str
+    instance_revision: int
+    package_revision: int
+    retained_concepts: list[str]
+    sensitive_concepts: list[SensitiveConcept]
+    ranges: dict[str, RangeOut]
+    row_count: int
+    sha256: str
+    created_at: str
+    download_path: str

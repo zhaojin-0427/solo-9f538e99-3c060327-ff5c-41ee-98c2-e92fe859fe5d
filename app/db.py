@@ -83,6 +83,25 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 
 CREATE INDEX IF NOT EXISTS idx_reports_instance ON reports(instance_id, created_at);
+
+-- Published sanitized data deliveries.  The CSV bytes are immutable: later
+-- corrections/re-checking never rewrite an existing export.
+CREATE TABLE IF NOT EXISTS exports (
+    id                   TEXT PRIMARY KEY,
+    report_id            TEXT NOT NULL,
+    instance_id          TEXT NOT NULL,
+    package_id           TEXT NOT NULL,
+    instance_revision    INTEGER NOT NULL,
+    package_revision     INTEGER NOT NULL,
+    retained_json        TEXT NOT NULL,
+    sensitive_json       TEXT NOT NULL,
+    widths_json          TEXT NOT NULL,
+    csv_blob             BLOB NOT NULL,
+    csv_sha256           TEXT NOT NULL,
+    created_at           TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_exports_report ON exports(report_id, created_at);
 """
 
 
@@ -103,6 +122,25 @@ def get_conn() -> sqlite3.Connection:
 
 def init_db() -> None:
     get_conn()
+
+
+def new_conn() -> sqlite3.Connection:
+    """Open an independent connection (used for one atomic publish transaction).
+
+    The shared connection is reused across request threads; a dedicated
+    connection keeps the export's BEGIN IMMEDIATE / check / INSERT / COMMIT
+    block from interleaving with a concurrent correction.
+    """
+    config.ensure_dirs()
+    Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(
+        str(config.DB_PATH), timeout=10, isolation_level=None,
+        check_same_thread=False,
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=10000")
+    return conn
 
 
 def reset_conn() -> None:

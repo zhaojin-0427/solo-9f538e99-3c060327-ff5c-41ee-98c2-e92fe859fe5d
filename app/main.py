@@ -6,12 +6,14 @@ from typing import Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, Header, Query, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from . import storage
 from .db import init_db
 from .errors import ApiError
-from .models import (CheckAck, InstanceOut, PackageOut, ReportList, ReportOut)
+from .models import (CheckAck, ExportOut, ExportRequest, InstanceOut, PackageOut,
+                     ReportList, ReportOut)
 
 
 @asynccontextmanager
@@ -34,9 +36,21 @@ app = FastAPI(
 
 @app.exception_handler(ApiError)
 async def _api_error(_request, exc: ApiError):
+    body = {"error": {"code": exc.code, "message": exc.message}}
+    if exc.details:
+        body["details"] = exc.details
+    return JSONResponse(status_code=exc.status_code, content=body)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(_request, exc: RequestValidationError):
+    problems = [
+        f"{'.'.join(str(p) for p in err.get('loc', ()))}: {err.get('msg', 'invalid')}"
+        for err in exc.errors()
+    ]
     return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": {"code": exc.code, "message": exc.message}},
+        status_code=422,
+        content={"error": {"code": "validation_error", "message": "; ".join(problems)}},
     )
 
 
@@ -143,3 +157,43 @@ def report_snapshot(report_id: str, kind: str):
         raise BadPayload("kind must be one of instance, xsd, calc")
     data, media = storage.get_report_snapshot(report_id, kind)
     return Response(content=data, media_type=media)
+
+
+# ------------------------------------------------- sanitized exports
+@app.post("/exports", response_model=ExportOut, status_code=201, tags=["exports"],
+          summary="脱敏供数：校验敏感科目可达宽度后发布仅含保留科目的 CSV")
+def create_export(body: ExportRequest):
+    sensitive = [{"concept": s.concept, "min_width": s.min_width}
+                 for s in body.sensitive_concepts]
+    return storage.create_export(
+        body.report_id,
+        body.expected_instance_revision,
+        body.expected_package_revision,
+        body.retained_concepts,
+        sensitive,
+    )
+
+
+@app.get("/exports", response_model=list[ExportOut], tags=["exports"],
+         summary="已发布的脱敏供数清单")
+def list_exports(instance_id: Optional[str] = Query(None)):
+    return storage.list_exports(instance_id)
+
+
+@app.get("/exports/{export_id}", response_model=ExportOut, tags=["exports"])
+def get_export(export_id: str):
+    return storage.get_export(export_id)
+
+
+@app.get("/exports/{export_id}/csv", tags=["exports"],
+         summary="下载已发布的脱敏 CSV（仅保留科目的报告值与 decimals）")
+def download_export(export_id: str):
+    data, media = storage.get_export_csv(export_id)
+    return Response(
+        content=data,
+        media_type=media,
+        headers={
+            "Content-Disposition": f'attachment; filename="{export_id}.csv"',
+            "Cache-Control": "no-store",
+        },
+    )
